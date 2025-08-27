@@ -7,3 +7,4 @@ export * from './queryUtils';
 export * from './supabase';
 export * from './supabaseApi';
 export * from './websocketService';
+export * from './leverageLens';
