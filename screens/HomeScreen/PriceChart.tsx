@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dimensions, Pressable } from 'react-native';
 
 import rektBomb from '@/assets/images/app-pngs/rekt-bomb.png';
@@ -9,6 +9,7 @@ import {
   PulsatingContainer,
 } from '@/components';
 import { Trade, useHomeContext } from '@/contexts';
+import { isolatedLiq, pnlTicks, viewportFor, yDecimals } from '@/utils';
 import {
   calculatePriceChange,
   getCurrentPriceFromHistorical,
@@ -23,6 +24,7 @@ import { Image } from 'expo-image';
 import { useTranslation } from 'react-i18next';
 import { LineChart } from 'react-native-gifted-charts';
 import styled, { DefaultTheme, useTheme } from 'styled-components/native';
+import { View } from 'react-native';
 
 // TODO - overflow hidden problems - rule lines go too far right and top is cut off
 
@@ -38,8 +40,15 @@ export const PriceChart = ({
   const { t } = useTranslation();
   const theme = useTheme();
   const chartHeight = 200;
-  const { selectedToken, selectedTimeframe, tokenPrices, openPositions } =
-    useHomeContext();
+  const {
+    selectedToken,
+    selectedTimeframe,
+    tokenPrices,
+    openPositions,
+    solTrade,
+    ethTrade,
+    btcTrade,
+  } = useHomeContext();
 
   // Fetch historical chart data only if no dummy data is provided
   const {
@@ -90,35 +99,70 @@ export const PriceChart = ({
   // Use real entry price from backend position, fallback to trade state
   const entryPrice = currentPosition?.entryPrice || trade?.entryPrice || 0;
 
-  // Calculate dynamic y-axis range to include all important prices
-  const importantPrices = [
-    ...dataValues, // Historical chart data
-    currentPrice, // Current market price
-    ...(entryPrice > 0 ? [entryPrice] : []), // Entry price if exists
-    ...(liquidationPrice ? [liquidationPrice] : []), // Liquidation price if exists
-  ].filter((price) => price > 0); // Remove any zero/invalid prices
+  // Determine display leverage (pre-trade from slider trade, post-trade from position)
+  const currentTrade = useMemo(() => {
+    switch (selectedToken) {
+      case 'sol':
+        return solTrade;
+      case 'eth':
+        return ethTrade;
+      case 'btc':
+        return btcTrade;
+      default:
+        return solTrade;
+    }
+  }, [selectedToken, solTrade, ethTrade, btcTrade]);
 
-  const actualMinValue = Math.min(...importantPrices);
-  const actualMaxValue = Math.max(...importantPrices);
+  const isPostTrade = !!currentPosition || (trade && trade.status === 'open');
+  const displayLeverageRaw = isPostTrade
+    ? currentPosition?.leverage || trade?.leverage || 1
+    : currentTrade?.leverage || 1;
+  const displayLeverage = Math.max(1, Math.min(displayLeverageRaw, 500));
+  const side: 'long' | 'short' = (isPostTrade
+    ? currentPosition?.direction
+    : currentTrade?.side || trade?.side) as 'long' | 'short' || 'short';
 
-  // Add some padding (5%) to the range for better visualization
-  const padding = (actualMaxValue - actualMinValue) * 0.05;
-  const paddedMinValue = actualMinValue - padding;
-  const paddedMaxValue = actualMaxValue + padding;
-  const actualValueRange = paddedMaxValue - paddedMinValue;
+  // Anchor logic: pre-trade anchor is current price, post-trade anchor follows entry with hysteresis
+  const [centerAnchor, setCenterAnchor] = useState<number | null>(null);
+  useEffect(() => {
+    if (isPostTrade && entryPrice > 0) {
+      setCenterAnchor(entryPrice);
+    } else {
+      setCenterAnchor(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPostTrade, entryPrice]);
 
-  // Calculate positions for different price lines using the new padded range
+  const anchor = isPostTrade ? (centerAnchor ?? (entryPrice || currentPrice)) : currentPrice;
+
+  // Viewport computation based on leverage lens
+  const pnlSpan = 1.2;
+  const minBandBps = 4;
+  const { yMin, yMax } = viewportFor({
+    anchor,
+    leverage: displayLeverage,
+    pnlSpan,
+    minBandBps,
+  });
+  const range = yMax - yMin;
+
+  // Calculate positions for different price lines using leverage lens viewport
   const calculateLinePosition = (price: number) => {
-    const priceRatio = (price - paddedMinValue) / actualValueRange;
+    const priceRatio = (price - yMin) / range;
     const topOffset = 20;
     const bottomOffset = 20;
     const plotArea = chartHeight - topOffset - bottomOffset;
     return topOffset + plotArea * (1 - priceRatio);
   };
 
-  const liquidationLineTop = liquidationPrice
-    ? calculateLinePosition(liquidationPrice)
-    : 0;
+  // Liquidation logic: actual post-trade, projected pre-trade
+  const DEFAULT_MMR = 0.005; // 0.5% default, replace with backend per tier when available
+  const gatingOk = 1 / displayLeverage >= DEFAULT_MMR;
+  const projectedLiq = !isPostTrade && gatingOk
+    ? isolatedLiq({ entry: currentPrice, leverage: displayLeverage, side, mmr: DEFAULT_MMR })
+    : null;
+  const liqToShow = isPostTrade ? liquidationPrice : projectedLiq || undefined;
+  const liquidationLineTop = liqToShow ? calculateLinePosition(liqToShow) : 0;
   const currentPriceLineTop = calculateLinePosition(currentPrice);
   const entryPriceLineTop = entryPrice ? calculateLinePosition(entryPrice) : 0;
 
@@ -147,6 +191,19 @@ export const PriceChart = ({
       fillColor = theme.colors.loss;
     }
   }
+
+  // Hysteresis recentering: recenters when price approaches edges (>=85% of half-range)
+  useEffect(() => {
+    if (!isPostTrade) return;
+    const half = range / 2;
+    if (half <= 0) return;
+    const delta = Math.abs(currentPrice - anchor);
+    if (delta >= 0.85 * half) {
+      // Soft recenter: jump center for now; can animate with Reanimated/Skia later
+      setCenterAnchor(currentPrice);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPrice, isPostTrade, range, anchor]);
 
   // Toggle state for price/percentage view
   const [showPercent, setShowPercent] = useState(false);
@@ -195,30 +252,40 @@ export const PriceChart = ({
         <LineChart
           data={data}
           isAnimated
-          animationDuration={1200}
+          animationDuration={300}
           areaChart
           color={chartColor}
           thickness={2}
           startFillColor={fillColor}
           endFillColor={theme.colors.background}
-          startOpacity={0.2}
-          endOpacity={0.01}
+          startOpacity={0.08}
+          endOpacity={0.0}
           hideDataPoints
           yAxisColor='transparent'
           xAxisColor='transparent'
-          rulesColor={theme.colors.secondary}
+          rulesColor={theme.colors.border}
           noOfSections={4}
           backgroundColor='transparent'
           initialSpacing={0}
-          yAxisOffset={paddedMinValue}
+          yAxisOffset={yMin}
           width={chartWidth}
           height={chartHeight}
           hideYAxisText={true}
           adjustToWidth={false}
           parentWidth={chartWidth}
           stepHeight={chartHeight / 4}
-          stepValue={actualValueRange / 4}
+          stepValue={range / 4}
         />
+
+        {/* Current price line */}
+        <LiquidationLineContainer
+          style={{
+            top: currentPriceLineTop,
+            width: chartWidth - 80,
+          }}
+        >
+          <CurrentLine />
+        </LiquidationLineContainer>
 
         {/* Custom y-axis labels (now pressable as a group) */}
         <Pressable
@@ -234,9 +301,11 @@ export const PriceChart = ({
           accessibilityLabel='Toggle price/percentage'
         >
           {Array.from({ length: 5 }, (_, i) => {
-            const value = paddedMinValue + (actualValueRange * i) / 4;
+            const value = yMin + (range * i) / 4;
             const sectionHeight = (chartHeight - 40) / 4;
             const yPosition = 20 + (4 - i) * sectionHeight;
+            const symbol = selectedToken.toUpperCase() as 'SOL' | 'ETH' | 'BTC';
+            const decimals = yDecimals(symbol);
             return (
               <YAxisLabel
                 key={i}
@@ -248,12 +317,39 @@ export const PriceChart = ({
                 <BodyXSMonoEmphasized
                   style={{ color: theme.colors.textSecondary }}
                 >
-                  ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                  ${value.toLocaleString('en-US', {
+                    minimumFractionDigits: decimals,
+                    maximumFractionDigits: decimals,
+                  })}
                 </BodyXSMonoEmphasized>
               </YAxisLabel>
             );
           })}
         </Pressable>
+
+        {/* PnL gridlines at ±25%, ±50%, ±100% */}
+        {pnlTicks({ anchor, leverage: displayLeverage, span: 1 }).map((tick, idx) => {
+          const top = calculateLinePosition(tick.price);
+          const label = `${tick.pnlPct > 0 ? '+' : ''}${tick.pnlPct}% PnL → $${tick.price.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`;
+          return (
+            <LiquidationLineContainer
+              key={`pnl-${idx}`}
+              style={{ top, width: chartWidth - 80 }}
+            >
+              <GuideLine />
+              <GuideLabel
+                style={{ left: -8, top: -11 }}
+              >
+                <BodyXSMonoEmphasized style={{ color: theme.colors.lowEmText }}>
+                  {label}
+                </BodyXSMonoEmphasized>
+              </GuideLabel>
+            </LiquidationLineContainer>
+          );
+        })}
 
         <CurrentPriceLabel
           style={{
@@ -281,6 +377,14 @@ export const PriceChart = ({
         {/* Entry Price Line and Label (show only if there's an open position or open trade) */}
         {hasOpenTrade && entryPrice > 0 && (
           <>
+            <LiquidationLineContainer
+              style={{
+                top: entryPriceLineTop,
+                width: chartWidth - 80,
+              }}
+            >
+              <EntryLine />
+            </LiquidationLineContainer>
             <EntryPriceLabel
               style={{
                 top: entryPriceLineTop - 10,
@@ -301,9 +405,23 @@ export const PriceChart = ({
           </>
         )}
 
-        {/* Liquidation Line and Label */}
-        {showLiquidation && liquidationPrice && (
+        {/* Liquidation Line, Label, and Bomb Band */}
+        {showLiquidation && liqToShow && (
           <>
+            {/* Bomb warning band from liq to edge (direction depends on side) */}
+            <WarningBand
+              style={{
+                top:
+                  side === 'long'
+                    ? liquidationLineTop
+                    : 20,
+                height:
+                  side === 'long'
+                    ? Math.max(0, chartHeight - 20 - liquidationLineTop)
+                    : Math.max(0, liquidationLineTop - 20),
+                width: chartWidth - 80,
+              }}
+            />
             <LiquidationLineContainer
               style={{
                 top: liquidationLineTop,
@@ -327,7 +445,7 @@ export const PriceChart = ({
             >
               <LiquidationText style={{ color: theme.colors.textPrimary }}>
                 $
-                {liquidationPrice.toLocaleString('en-US', {
+                {liqToShow.toLocaleString('en-US', {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
                 })}
@@ -453,6 +571,55 @@ const LiquidationLine = styled.View`
   border-color: ${({ theme }: { theme: DefaultTheme }) =>
     theme.colors.liquidBorder};
   z-index: 10;
+`;
+
+// Additional guide/entry/current/warner styles
+const GuideLine = styled.View`
+  flex: 1;
+  height: 1px;
+  border-bottom-width: 1px;
+  border-style: dashed;
+  border-color: ${({ theme }: { theme: DefaultTheme }) =>
+    theme.colors.borderLight};
+  opacity: 0.25;
+`;
+
+const GuideLabel = styled.View`
+  position: absolute;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background-color: ${({ theme }: { theme: DefaultTheme }) =>
+    theme.colors.background}CC;
+  z-index: 12;
+`;
+
+const EntryLine = styled.View`
+  flex: 1;
+  height: 1px;
+  border-width: 1px;
+  border-style: dotted;
+  border-color: ${({ theme }: { theme: DefaultTheme }) =>
+    theme.colors.borderEmphasized};
+  z-index: 12;
+`;
+
+const CurrentLine = styled.View`
+  flex: 1;
+  height: 1px;
+  background-color: ${({ theme }: { theme: DefaultTheme }) =>
+    theme.colors.textSecondary};
+  opacity: 0.5;
+  z-index: 11;
+`;
+
+const WarningBand = styled.View`
+  position: absolute;
+  left: 20px;
+  right: 60px;
+  background-color: ${({ theme }: { theme: DefaultTheme }) =>
+    theme.colors.liquidBg};
+  opacity: 0.08;
+  z-index: 5;
 `;
 
 const LiquidationLabel = styled.View`
