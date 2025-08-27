@@ -277,15 +277,7 @@ export const PriceChart = ({
           stepValue={range / 4}
         />
 
-        {/* Current price line */}
-        <LiquidationLineContainer
-          style={{
-            top: currentPriceLineTop,
-            width: chartWidth - 80,
-          }}
-        >
-          <CurrentLine />
-        </LiquidationLineContainer>
+        {/* Current price line removed to match reference */}
 
         {/* Custom y-axis labels (now pressable as a group) */}
         <Pressable
@@ -327,29 +319,7 @@ export const PriceChart = ({
           })}
         </Pressable>
 
-        {/* PnL gridlines at ±25%, ±50%, ±100% */}
-        {pnlTicks({ anchor, leverage: displayLeverage, span: 1 }).map((tick, idx) => {
-          const top = calculateLinePosition(tick.price);
-          const label = `${tick.pnlPct > 0 ? '+' : ''}${tick.pnlPct}% PnL → $${tick.price.toLocaleString('en-US', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}`;
-          return (
-            <LiquidationLineContainer
-              key={`pnl-${idx}`}
-              style={{ top, width: chartWidth - 80 }}
-            >
-              <GuideLine />
-              <GuideLabel
-                style={{ left: -8, top: -11 }}
-              >
-                <BodyXSMonoEmphasized style={{ color: theme.colors.lowEmText }}>
-                  {label}
-                </BodyXSMonoEmphasized>
-              </GuideLabel>
-            </LiquidationLineContainer>
-          );
-        })}
+        {/* PnL gridlines removed for this design */}
 
         <CurrentPriceLabel
           style={{
