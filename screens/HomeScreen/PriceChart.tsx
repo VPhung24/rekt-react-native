@@ -258,12 +258,12 @@ export const PriceChart = ({
           thickness={2}
           startFillColor={fillColor}
           endFillColor={theme.colors.background}
-          startOpacity={0.2}
-          endOpacity={0.01}
+          startOpacity={0.08}
+          endOpacity={0.0}
           hideDataPoints
           yAxisColor='transparent'
           xAxisColor='transparent'
-          rulesColor={theme.colors.secondary}
+          rulesColor={theme.colors.border}
           noOfSections={4}
           backgroundColor='transparent'
           initialSpacing={0}
@@ -341,9 +341,9 @@ export const PriceChart = ({
             >
               <GuideLine />
               <GuideLabel
-                style={{ right: 15, top: -10 }}
+                style={{ left: -8, top: -11 }}
               >
-                <BodyXSMonoEmphasized style={{ color: theme.colors.textSecondary }}>
+                <BodyXSMonoEmphasized style={{ color: theme.colors.lowEmText }}>
                   {label}
                 </BodyXSMonoEmphasized>
               </GuideLabel>
@@ -577,9 +577,11 @@ const LiquidationLine = styled.View`
 const GuideLine = styled.View`
   flex: 1;
   height: 1px;
-  background-color: ${({ theme }: { theme: DefaultTheme }) =>
+  border-bottom-width: 1px;
+  border-style: dashed;
+  border-color: ${({ theme }: { theme: DefaultTheme }) =>
     theme.colors.borderLight};
-  opacity: 0.35;
+  opacity: 0.25;
 `;
 
 const GuideLabel = styled.View`
@@ -616,7 +618,7 @@ const WarningBand = styled.View`
   right: 60px;
   background-color: ${({ theme }: { theme: DefaultTheme }) =>
     theme.colors.liquidBg};
-  opacity: 0.15;
+  opacity: 0.08;
   z-index: 5;
 `;
 
